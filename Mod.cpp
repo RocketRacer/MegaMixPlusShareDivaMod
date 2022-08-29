@@ -84,13 +84,16 @@ void curlOperation(std::string resultsString)
         // Send request, read the result, print any errors or confirm successful send
         res = curl_easy_perform(curl);
 
-        if (res != CURLE_OK && consoleEnabled)
+        if (consoleEnabled)
         {
-            printf("[ShareDiva] ERROR: Failed to send PV results to ShareDiva Bot: %s\n", curl_easy_strerror(res));
-        }
-        else
-        {
-            printf("[ShareDiva] Successfully sent PV results to ShareDiva Bot.\n");
+            if (res != CURLE_OK)
+            {
+                printf("[ShareDiva] ERROR: Failed to send PV results to ShareDiva Bot: %s\n", curl_easy_strerror(res));
+            }
+            else
+            {
+                printf("[ShareDiva] Successfully sent PV results to ShareDiva Bot.\n");
+            }
         }
 
         curl_easy_cleanup(curl);
