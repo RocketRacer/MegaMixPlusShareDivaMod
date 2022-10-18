@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <SigScan.h>
 #include <detours.h>
+#include <toml.hpp>
 #include <thread>
 #include <string>
 #include <curl/curl.h>
@@ -11,10 +12,13 @@
 #include <nlohmann/json.hpp>
 #include <isteamuser.h>
 #include <steam_api.h>
+#include <inttypes.h>
 #include <windows.h>
 #include <csignal>
 #include "Diva.h"
 #include "discord/discord.h"
+
+// MegaMix+ addresses
 
 const int64 ShareDivaBotDiscordId = 1004894321067184169;
 const uint64_t DivaScoreBaseAddress = 0x00000001412EF568;
@@ -31,9 +35,13 @@ const uint64_t DivaCurrentPVIdAddress = 0x00000001412C2340;
 const uint64_t DivaCurrentPVDifficultyAddress = 0x00000001423157AC;
 
 const std::string ApiEndpoint = "<REDACTED>";
+const std::string ConfigFileName = "config.toml";
+const std::string ConfigDiscordUidName = "discordUid";
 
 uint64 steamId64 = 0;
 uint64 discordUid = 0;
+
+int DiscordSdkTimeoutCounterLimit = 10;
 
 bool consoleEnabled = false;
 
@@ -186,6 +194,24 @@ extern "C"
         std::unique_ptr<discord::Core> core;
     };
 
+    void handleConfigInvalidUidException()
+    {
+        if (consoleEnabled)
+            printf("[ShareDiva] ERROR: Failed to read Discord UID from config file: invalid UID provided.\n");
+
+        MessageBoxA(NULL, "Hello there!\nThe 'discorduid' you provided is not a valid number - it must be a numerical number, such as 123456789123456789. Please check the configuration file and try again.\nThe game will now close.", "ShareDiva configuration error", MB_OK);
+        exit(EXIT_SUCCESS);
+    }
+
+    void handleConfigMissingUid()
+    {
+        if (consoleEnabled)
+            printf("[ShareDiva] ERROR: Failed to read Discord UID from config file: Discord UID was not provided.\n");
+
+        MessageBoxA(NULL, "Hello there!\n\nIt appears Discord is unable to co-operate with me and I'm unable to retrieve your Discord UID through it. :( I apologise for this inconvenience, but this out your or my control, this is a fault on Discord's end.\n\nPlease update the 'discorduid' value in ShareDiva's 'config.toml' configuration file with your Discord UID.\nShareDiva configuration file can be found in 'mods/ShareDiva/config.toml'.\n\nInstructions on how to retrieve your Discord UID are provided in the README file in mod's folder.\n\nThe game will now close.", "ShareDiva configuration error", MB_OK);
+        exit(EXIT_SUCCESS);
+    }
+
     void __declspec(dllexport) Init()
     {
         if (GetConsoleWindow()) {
@@ -203,28 +229,65 @@ extern "C"
         if (!state.core)
         {
             if (consoleEnabled)
-                printf("[ShareDiva] Failed to load Discord client core, unable to receive Discord UID. Perhaps your Discord client is offline?\n");
-        }      
+                printf("[ShareDiva] ERROR: Failed to load Discord SDK client core, unable to retrieve your Discord UID. Perhaps your Discord client is offline?\n");
+        }
+
+        // Catch any errors on Discord SDK's side and output them to console
+        core->SetLogHook(discord::LogLevel::Debug, [&](discord::LogLevel log, const char* message)
+            {
+                if (consoleEnabled)
+                    printf("[ShareDiva] ERROR (Discord SDK): %s\n", message);
+            });
+        
 
         // Get the Discord ID of currently logged-in user when the client creates successfully
         core->UserManager().OnCurrentUserUpdate.Connect([&state]() {
             state.core->UserManager().GetCurrentUser(&state.currentUser);
             discordUid = state.currentUser.GetId();
             done = true;
+
+            if (consoleEnabled)
+                printf("[ShareDiva] Successfully retrieved currently logged-in Discord user - ShareDiva is now listening to your high-scores, ready to send your results to ShareDiva Discord bot!\n");
         });
         
-        INSTALL_HOOK(_PrintResult);
-
-        if (consoleEnabled)
-            printf("[ShareDiva] Listening to your high-scores, ready to send your results to ShareDiva Discord bot!\n");
+        INSTALL_HOOK(_PrintResult);               
 
         std::signal(SIGINT, [](int) { done = true; });
+        int timeoutCounter = 0;
 
         // Loop until the callback returns successfully, which will then trigger on retrieval of currently logged-in Discord user
         do {
             state.core->RunCallbacks();
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            timeoutCounter += 1;
+            if (timeoutCounter == DiscordSdkTimeoutCounterLimit) // 10 = 5s
+            {
+                done = true;
+                if (consoleEnabled)
+                    printf("[ShareDiva] Could not retrieve Discord user using Discord SDK. Reading the Discord UID from mod config file instead.\n");
+                
+                const toml::value config = toml::parse(ConfigFileName);
+                const toml::value discordUid_ = toml::get<toml::table>(config).at(ConfigDiscordUidName);
+
+                try {
+                    discordUid = toml::get<uint64>(discordUid_);
+                    if (consoleEnabled)
+                        printf("[ShareDiva] Using Discord UID retrieved from config file: %" PRIu64 ". If this is incorrect, please update it prior to submitting any song results.\n", discordUid);
+                }
+                catch (toml::type_error) {
+                    handleConfigInvalidUidException();
+                }
+                catch (std::out_of_range) {
+                    handleConfigInvalidUidException();
+                }
+
+                // 0 is default value in the config, meaning that the user hasn't updated their config file
+                if (discordUid == 0)
+                {
+                    handleConfigMissingUid();
+                }
+            }
         } while (!done);
-    }
+    }    
 }
