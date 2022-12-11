@@ -16,7 +16,6 @@
 #include <windows.h>
 #include <csignal>
 #include "Diva.h"
-#include "discord/discord.h"
 
 // MegaMix+ addresses
 
@@ -220,74 +219,31 @@ extern "C"
             }
             consoleEnabled = freopen("CONOUT$", "w", stdout) != NULL;
         }
+        
+        INSTALL_HOOK(_PrintResult);
 
-        DiscordState state{};
-        discord::Core* core{};
+        if (consoleEnabled)
+            printf("[ShareDiva] Reading the Discord UID from mod config file.\n");
 
-        auto result = discord::Core::Create(ShareDivaBotDiscordId, DiscordCreateFlags_Default, &core);
-        state.core.reset(core);
-        if (!state.core)
-        {
+        const toml::value config = toml::parse(ConfigFileName);
+        const toml::value discordUid_ = toml::get<toml::table>(config).at(ConfigDiscordUidName);
+
+        try {
+            discordUid = toml::get<uint64>(discordUid_);
             if (consoleEnabled)
-                printf("[ShareDiva] ERROR: Failed to load Discord SDK client core, unable to retrieve your Discord UID. Perhaps your Discord client is offline?\n");
+                printf("[ShareDiva] Using Discord UID retrieved from config file: %" PRIu64 ". If this is incorrect, please update it prior to submitting any song results.\n", discordUid);
+        }
+        catch (toml::type_error) {
+            handleConfigInvalidUidException();
+        }
+        catch (std::out_of_range) {
+            handleConfigInvalidUidException();
         }
 
-        // Catch any errors on Discord SDK's side and output them to console
-        core->SetLogHook(discord::LogLevel::Debug, [&](discord::LogLevel log, const char* message)
-            {
-                if (consoleEnabled)
-                    printf("[ShareDiva] ERROR (Discord SDK): %s\n", message);
-            });
-        
-
-        // Get the Discord ID of currently logged-in user when the client creates successfully
-        core->UserManager().OnCurrentUserUpdate.Connect([&state]() {
-            state.core->UserManager().GetCurrentUser(&state.currentUser);
-            discordUid = state.currentUser.GetId();
-            done = true;
-
-            if (consoleEnabled)
-                printf("[ShareDiva] Successfully retrieved currently logged-in Discord user - ShareDiva is now listening to your high-scores, ready to send your results to ShareDiva Discord bot!\n");
-        });
-        
-        INSTALL_HOOK(_PrintResult);               
-
-        std::signal(SIGINT, [](int) { done = true; });
-        int timeoutCounter = 0;
-
-        // Loop until the callback returns successfully, which will then trigger on retrieval of currently logged-in Discord user
-        do {
-            state.core->RunCallbacks();
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-            timeoutCounter += 1;
-            if (timeoutCounter == DiscordSdkTimeoutCounterLimit) // 10 = 5s
-            {
-                done = true;
-                if (consoleEnabled)
-                    printf("[ShareDiva] Could not retrieve Discord user using Discord SDK. Reading the Discord UID from mod config file instead.\n");
-                
-                const toml::value config = toml::parse(ConfigFileName);
-                const toml::value discordUid_ = toml::get<toml::table>(config).at(ConfigDiscordUidName);
-
-                try {
-                    discordUid = toml::get<uint64>(discordUid_);
-                    if (consoleEnabled)
-                        printf("[ShareDiva] Using Discord UID retrieved from config file: %" PRIu64 ". If this is incorrect, please update it prior to submitting any song results.\n", discordUid);
-                }
-                catch (toml::type_error) {
-                    handleConfigInvalidUidException();
-                }
-                catch (std::out_of_range) {
-                    handleConfigInvalidUidException();
-                }
-
-                // 0 is default value in the config, meaning that the user hasn't updated their config file
-                if (discordUid == 0)
-                {
-                    handleConfigMissingUid();
-                }
-            }
-        } while (!done);
+        // 0 is default value in the config, meaning that the user hasn't updated their config file
+        if (discordUid == 0)
+        {
+            handleConfigMissingUid();
+        }
     }    
 }
